@@ -910,7 +910,23 @@ function downloadReport() {
 
 document.getElementById("downloadBtn").addEventListener("click", downloadReport);
 
+// Atualização automática: busca a planilha de novo a cada 30s, pra ver o
+// que outras pessoas da equipe salvaram sem precisar recarregar a página.
+// Pula o ciclo se o usuário estiver com o cursor num campo de quantidade,
+// pra não apagar o que ele está digitando.
+let _autoRefreshTimer = null;
+function startAutoRefresh() {
+  if (_autoRefreshTimer) return;
+  _autoRefreshTimer = setInterval(() => {
+    if (!syncConfigured()) return;
+    const active = document.activeElement;
+    if (active && active.classList && active.classList.contains("audit-input")) return;
+    loadAudits();
+  }, 30000);
+}
+
 loadAudits();
+startAutoRefresh();
 </script>
 
 </body>
