@@ -2,6 +2,65 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
+<script>
+  // Bloqueia acesso direto a esta página sem passar pelo login do portal
+  // (este repositório é separado do ultraexpansao, por isso a URL completa).
+  if (sessionStorage.getItem('infolink_hub_auth') !== 'ok') {
+    window.location.href = 'https://riicardoabreu-lab.github.io/ultraexpansao/index.html';
+  }
+</script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getAuth, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import { getFirestore, collection, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  const fb = initializeApp({
+    apiKey: "AIzaSyCryi9kBLRbe1Vc8nqwYa886Pc9GxaXWwU",
+    authDomain: "isp-manager-ce.firebaseapp.com",
+    projectId: "isp-manager-ce",
+    storageBucket: "isp-manager-ce.firebasestorage.app",
+    messagingSenderId: "374725918192",
+    appId: "1:374725918192:web:5afa4ee05de2db85bbf135"
+  });
+  const auth = getAuth(fb);
+  const fsDb = getFirestore(fb);
+  window._doLogout = function(){
+    signOut(auth).finally(()=>{
+      sessionStorage.clear();
+      window.location.href = 'https://riicardoabreu-lab.github.io/ultraexpansao/index.html';
+    });
+  };
+
+  // ---- Sincronização em tempo real com a nuvem (Firestore) ----
+  // Uma coleção compartilhada (auditoria_lb), um documento por protocolo —
+  // qualquer pessoa da equipe logada vê as auditorias de todo mundo na hora.
+  window._fbSaveAudit = (protocolo, rec) => {
+    return setDoc(doc(fsDb, 'auditoria_lb', String(protocolo)), {
+      status: rec.status,
+      auditor: rec.auditor,
+      data_vistoria: rec.data_vistoria,
+      itens_auditados: rec.itens_auditados,
+      atualizado_em: Date.now(),
+    });
+  };
+
+  onAuthStateChanged(auth, user => {
+    if(!user) return;
+    window._fbUser = user;
+    onSnapshot(collection(fsDb, 'auditoria_lb'), snap => {
+      const parsed = {};
+      snap.forEach(docSnap => {
+        const d = docSnap.data();
+        parsed[docSnap.id] = {
+          status: d.status || 'pendente',
+          auditor: d.auditor || null,
+          data_vistoria: d.data_vistoria || null,
+          itens_auditados: d.itens_auditados || {},
+        };
+      });
+      if(window._applyAuditData) window._applyAuditData(parsed);
+    }, err => console.error('Falha no listener de auditorias:', err));
+  });
+</script>
 <title>Relatório de Materiais por Protocolo — Infolink</title>
 <style>
   :root {
@@ -422,8 +481,16 @@
 <body>
 
 <header>
-  <h1>Relatório de Materiais Utilizados por Protocolo</h1>
-  <p>Infolink Telecom · Filial Barra · Consumo, caixas de emenda, localização e auditoria de campo por OS — ABNER DA SILVA SOUSA</p>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+    <div>
+      <h1>Relatório de Materiais Utilizados por Protocolo</h1>
+      <p>Infolink Telecom · Filial Barra · Consumo, caixas de emenda, localização e auditoria de campo por OS — ABNER DA SILVA SOUSA</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-shrink:0;">
+      <a href="https://riicardoabreu-lab.github.io/ultraexpansao/home.html" class="status-btn" style="text-decoration:none;display:inline-flex;align-items:center;">← Voltar</a>
+      <button class="status-btn" onclick="window._doLogout && window._doLogout()">Sair</button>
+    </div>
+  </div>
 </header>
 
 <div class="controls">
@@ -460,21 +527,11 @@ const MONTH_NAMES = {
   "07":"Jul","08":"Ago","09":"Set","10":"Out","11":"Nov","12":"Dez"
 };
 
-// ====================================================================
-// Sincronização (Google Apps Script + Google Sheets)
-// Cole aqui a URL do Web App depois de publicá-lo (veja o README do
-// repositório para o passo a passo). Enquanto estiver "COLE_AQUI", a
-// ferramenta funciona só localmente nesta aba (sem sincronizar).
-// ====================================================================
-const APPS_SCRIPT_URL = "COLE_AQUI";
-
 let activeMonth = "todos";
 let activeStatus = "todas";
 let searchTerm = "";
 let auditData = {}; // { protocolo: { status, auditor, data_vistoria, itens_auditados: {produto: qtd} } }
 let storageReady = false;
-
-const AUDIT_KEY = "auditorias_link_barato_abner"; // não usado mais como chave de storage, mantido de referência
 
 function getAudit(prot) {
   return auditData[prot] || { status: "pendente", auditor: null, data_vistoria: null, itens_auditados: {} };
@@ -484,69 +541,28 @@ function setSyncStatus(state) {
   const dot = document.getElementById("syncDot");
   const text = document.getElementById("syncText");
   dot.className = "sync-dot" + (state === "ok" ? " ok" : state === "saving" ? " saving" : "");
-  text.textContent = state === "ok" ? "auditorias sincronizadas com a equipe"
+  text.textContent = state === "ok" ? "auditorias sincronizadas com a equipe (tempo real)"
     : state === "saving" ? "salvando..."
     : state === "error" ? "não foi possível sincronizar — alterações só nesta aba"
     : "carregando auditorias...";
 }
 
-function syncConfigured() {
-  return APPS_SCRIPT_URL && APPS_SCRIPT_URL !== "COLE_AQUI";
-}
-
-async function loadAudits() {
-  if (!syncConfigured()) {
-    storageReady = true;
-    setSyncStatus("error");
-    render();
-    return;
-  }
-  try {
-    const res = await fetch(APPS_SCRIPT_URL, { method: "GET" });
-    const json = await res.json();
-    if (json.ok && Array.isArray(json.auditorias)) {
-      const parsed = {};
-      json.auditorias.forEach(row => {
-        if (row.protocolo === "" || row.protocolo === undefined || row.protocolo === null) return;
-        let itens = {};
-        try { itens = row.itens_auditados ? JSON.parse(row.itens_auditados) : {}; } catch (e) { itens = {}; }
-        parsed[row.protocolo] = {
-          status: row.status || "pendente",
-          auditor: row.auditor || null,
-          data_vistoria: row.data_vistoria || null,
-          itens_auditados: itens,
-        };
-      });
-      auditData = parsed;
-    }
-    storageReady = true;
-    setSyncStatus("ok");
-  } catch (e) {
-    storageReady = true;
-    setSyncStatus("error");
-    console.error("Falha ao carregar auditorias:", e);
-  }
+// Chamado pelo listener em tempo real do Firestore (módulo no <head>)
+// sempre que qualquer pessoa da equipe salva uma auditoria.
+function applyAuditData(parsed) {
+  auditData = parsed;
+  storageReady = true;
+  setSyncStatus("ok");
   render();
 }
+window._applyAuditData = applyAuditData;
 
 async function saveAudit(prot) {
-  if (!syncConfigured()) { setSyncStatus("error"); return; }
+  if (!window._fbSaveAudit) { setSyncStatus("error"); return; }
   setSyncStatus("saving");
   const rec = getAudit(prot);
   try {
-    // Content-Type text/plain evita o preflight CORS (Apps Script não
-    // responde bem a OPTIONS) — o backend lê e faz JSON.parse mesmo assim.
-    await fetch(APPS_SCRIPT_URL, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({
-        protocolo: prot,
-        status: rec.status,
-        auditor: rec.auditor,
-        data_vistoria: rec.data_vistoria,
-        itens_auditados: JSON.stringify(rec.itens_auditados),
-      }),
-    });
+    await window._fbSaveAudit(prot, rec);
     setSyncStatus("ok");
   } catch (e) {
     setSyncStatus("error");
@@ -910,23 +926,10 @@ function downloadReport() {
 
 document.getElementById("downloadBtn").addEventListener("click", downloadReport);
 
-// Atualização automática: busca a planilha de novo a cada 30s, pra ver o
-// que outras pessoas da equipe salvaram sem precisar recarregar a página.
-// Pula o ciclo se o usuário estiver com o cursor num campo de quantidade,
-// pra não apagar o que ele está digitando.
-let _autoRefreshTimer = null;
-function startAutoRefresh() {
-  if (_autoRefreshTimer) return;
-  _autoRefreshTimer = setInterval(() => {
-    if (!syncConfigured()) return;
-    const active = document.activeElement;
-    if (active && active.classList && active.classList.contains("audit-input")) return;
-    loadAudits();
-  }, 30000);
-}
-
-loadAudits();
-startAutoRefresh();
+// A sincronização em tempo real (Firestore) fica no listener do <head>,
+// que chama applyAuditData() sozinho assim que os dados chegam. Aqui só
+// desenhamos a tela uma primeira vez com o estado inicial (vazio).
+render();
 </script>
 
 </body>
