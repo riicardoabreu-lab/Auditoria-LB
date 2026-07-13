@@ -63,7 +63,10 @@
         };
       });
       if(window._applyAuditData) window._applyAuditData(parsed);
-    }, err => console.error('Falha no listener de auditorias:', err));
+    }, err => {
+      console.error('Falha no listener de auditorias:', err);
+      if(window._applyAuditError) window._applyAuditError(err);
+    });
   });
 </script>
 <title>Relatório de Materiais por Protocolo — Infolink</title>
@@ -669,6 +672,22 @@ function applyAuditData(parsed) {
   render();
 }
 window._applyAuditData = applyAuditData;
+
+// Chamado se o listener em tempo real falhar (ex: regras do Firestore
+// ainda não liberando esta coleção pra essa conta) — mostra um erro
+// visível em vez de deixar "carregando..." pra sempre.
+function applyAuditError(err) {
+  storageReady = true;
+  setSyncStatus("error");
+  const results = document.getElementById("results");
+  const isPermission = err && err.code === "permission-denied";
+  results.innerHTML = `<div class="empty">⚠️ Não foi possível carregar as auditorias.<br>` +
+    (isPermission
+      ? "As regras do Firestore ainda não liberam esta conta pra ler/gravar a auditoria — avise quem administra o site."
+      : "Verifique sua conexão e recarregue a página.") +
+    `</div>`;
+}
+window._applyAuditError = applyAuditError;
 
 async function saveAudit(prot) {
   if (!window._fbSaveAudit) { setSyncStatus("error"); return; }
